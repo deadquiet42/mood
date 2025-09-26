@@ -3,6 +3,8 @@ set -euo pipefail
 umask 022
 DATA="${DATA:-$HOME/mood/data.csv}"
 
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+
 normalize_charge() {
   case "${1:-}" in
     quiet|Quiet|QUIET|-)                 echo "quiet" ;;
@@ -29,39 +31,76 @@ ensure_data() {
 
 set_entry() {
   ensure_data
-  local mood="$1"
-  local charge="$2"
-  if ! valid_mood "$mood"; then
-    echo "Invalid mood: $mood" >&2
-    exit 1
-  fi
-  if ! valid_charge "$charge"; then
-    echo "Invalid charge: $charge" >&2
-    exit 1
-  fi
-  local today
-  today=$(date +%F)
-  # remove existing entry for today
-  grep -v "^$today," "$DATA" > "$DATA.tmp" || true
-  mv "$DATA.tmp" "$DATA"
-  echo "$today,$mood,$charge" >> "$DATA"
+  local mood="$1"; shift || true
+  local charge="quiet"
+  local date="$(date +%F)"
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --charge=*) charge="$(normalize_charge "${1#*=}")"; shift ;;
+      --charge)   charge="$(normalize_charge "${2:-}")"; shift 2 ;;
+      --date=*)   date="${1#*=}"; shift ;;
+      --date)     date="${2:-}"; shift 2 ;;
+      *)          shift ;;
+    esac
+  done
+
+  valid_mood "$mood"    || { echo "moods: clear bright fair hazy heavy overcast stormy" >&2; exit 1; }
+  valid_charge "$charge"|| { echo "charges: quiet restless electric" >&2; exit 1; }
+
+  # Atomic write via temp file in same dir
+  local dir tmp
+  dir="$(dirname "$DATA")"
+  tmp="$(mktemp "$dir/.data.csv.tmp.XXXXXX")"
+
+  awk -F, -v D="$date" -v M="$mood" -v C="$charge" 'BEGIN{OFS=","}
+    NR==1 { print; next }
+    {
+      if ($1==D) { $2=M; $3=C; seen=1 }
+      print
+    }
+    END {
+      if (!seen) print D,M,C
+    }' "$DATA" > "$tmp"
+
+  # Replace and force world-readable perms
+  mv -f "$tmp" "$DATA"
+  chmod 644 "$DATA"
+
+  printf "%s  %s | %s\n" "$date" "$mood" "$charge"
 }
 
-show_entries() {
-  ensure_data
-  column -t -s, "$DATA"
+usage() {
+  cat <<EOF 
+
+Backfill / correct a specific day
+  mood set <mood> --charge <charge> --date YYYY-MM-DD
+
+Moods (choose one)
+  clear     (empty sky / spacious / light)
+  bright    (sunny / uplifted / sparkly)
+  fair      (balanced / okay / steady)
+  hazy      (foggy / vague / dull)
+  heavy     (weighted / dense / tired)
+  overcast  (fully covered / flat / gray)
+  stormy    (agitated / turbulent / intense)
+
+Charges (optional flavor; default = quiet)
+  quiet     → calm baseline, low activity
+  restless  → unsettled, fidgety, in motion
+  electric  → charged, sharp, high energy
+
+Examples
+  mood set bright --charge restless
+  mood set hazy                         # quiet by default
+  mood set stormy --charge electric --date 2025-09-10
+mood set <mood> [--charge quiet|restless|electric] [--date YYYY-MM-DD]
+moods: clear bright fair hazy heavy overcast stormy
+EOF
 }
 
-case "${1:-}" in
-  set)
-    shift
-    set_entry "$@"
-    ;;
-  show)
-    show_entries
-    ;;
-  *)
-    echo "Usage: $0 {set MOOD CHARGE|show}" >&2
-    exit 1
-    ;;
+cmd="${1:-}"; shift || true
+case "$cmd" in
+  set) [ -n "${1:-}" ] || { usage; exit 1; }; set_entry "$@" ;;
+  *)  usage; exit 1 ;;
 esac
