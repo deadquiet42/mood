@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 022
+DATA="${DATA:-$HOME/mood/data.csv}"
+
+normalize_charge() {
+  case "${1:-}" in
+    quiet|Quiet|QUIET|-)                 echo "quiet" ;;
+    restless|Restless|RESTLESS|"~")      echo "restless" ;;
+    electric|Electric|ELECTRIC|"^")      echo "electric" ;;
+    *)                                   echo "" ;;
+  esac
+}
+
+valid_mood() {
+  case "$1" in clear|bright|fair|hazy|heavy|overcast|stormy) return 0;; *) return 1;; esac
+}
+valid_charge() {
+  case "${1:-}" in quiet|restless|electric) return 0;; *) return 1;; esac
+}
+
+ensure_data() {
+  if [ ! -f "$DATA" ]; then
+    mkdir -p "$(dirname "$DATA")"
+    echo "date,mood,charge" > "$DATA"
+    chmod 644 "$DATA"
+  fi
+}
+
+set_entry() {
+  ensure_data
+  local mood="$1"
+  local charge="$2"
+  if ! valid_mood "$mood"; then
+    echo "Invalid mood: $mood" >&2
+    exit 1
+  fi
+  if ! valid_charge "$charge"; then
+    echo "Invalid charge: $charge" >&2
+    exit 1
+  fi
+  local today
+  today=$(date +%F)
+  # remove existing entry for today
+  grep -v "^$today," "$DATA" > "$DATA.tmp" || true
+  mv "$DATA.tmp" "$DATA"
+  echo "$today,$mood,$charge" >> "$DATA"
+}
+
+show_entries() {
+  ensure_data
+  column -t -s, "$DATA"
+}
+
+case "${1:-}" in
+  set)
+    shift
+    set_entry "$@"
+    ;;
+  show)
+    show_entries
+    ;;
+  *)
+    echo "Usage: $0 {set MOOD CHARGE|show}" >&2
+    exit 1
+    ;;
+esac
